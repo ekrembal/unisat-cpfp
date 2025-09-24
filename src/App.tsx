@@ -15,6 +15,7 @@ import { CHAINS_MAP, ChainType } from "./const";
 import { copyToClipboard, satoshisToAmount } from "./utils";
 import * as bitcoin from "bitcoinjs-lib";
 import { Transaction } from "bitcoinjs-lib";
+import * as ecc from "@bitcoin-js/tiny-secp256k1-asmjs";
 import { SendBitcoinCard } from "./components/SendBitcoinCard";
 import { PushPsbtCard } from "./components/PushPsbtCard";
 import { PushTxCard } from "./components/PushTxCard";
@@ -26,17 +27,19 @@ import { SendRunesCard } from "./components/SendRunesCard";
 import { MultiSignMessageCard } from "./components/MultiSignMessageCard";
 import { SignPsbtsCard } from "./components/SignPsbtsCard";
 
-// Simple bitcoinjs-lib setup for web browsers
+// Initialize ECC library for web browsers
+bitcoin.initEccLib(ecc);
 
 function App() {
-  // Simple test to verify bitcoinjs-lib works
+  // Test to verify bitcoinjs-lib and ECC work
   useEffect(() => {
     try {
-      // Simple transaction parsing test
-      const transaction = Transaction.fromHex("0100000001000000000000000000000000000000000000000000000000000000000000000000000000006a47304402200000000000000000000000000000000000000000000000000000000000000000022000000000000000000000000000000000000000000000000000000000000000000121000000000000000000000000000000000000000000000000000000000000000000ffffffff01e8030000000000001976a9140000000000000000000000000000000000000000000088ac00000000");
-      console.log("Bitcoin library test - transaction parsed successfully, version:", transaction.version);
+      // Test ECC initialization by trying address generation
+      const testPublicKey = Buffer.from("03" + "00".repeat(32), "hex");
+      const { address } = bitcoin.payments.p2pkh({ pubkey: testPublicKey });
+      console.log("Bitcoin library with ECC test - address generation works:", address);
     } catch (error) {
-      console.log("Bitcoin library ready (test transaction parsing failed as expected)");
+      console.error("Bitcoin library ECC test failed:", error);
     }
   }, []);
 
@@ -331,6 +334,11 @@ function App() {
 
         // Extract and broadcast the signed transaction
         const signedPsbt = bitcoin.Psbt.fromHex(signedPsbtHex);
+
+        console.log("Signed PSBT:", signedPsbt);
+        // signedPsbt.data.inputs[0].finalScriptWitness = Buffer.alloc(0);
+        signedPsbt.data.inputs[0].finalScriptSig = Buffer.alloc(0);
+        console.log("Signed PSBT:", signedPsbt);
         const finalTx = signedPsbt.extractTransaction();
         const finalTxHex = finalTx.toHex();
         
