@@ -321,6 +321,10 @@ function App() {
         console.log("Fee payer input - TXID:", suitableUtxo.txid, "VOUT:", suitableUtxo.vout, "Value:", suitableUtxo.value);
         console.log("Change output - Address:", address, "Value:", changeAmount);
         
+        // set the psbt version to same as the parent transaction
+        psbt.setVersion(transaction.version);
+        console.log("PSBT version:", transaction.version);
+        
         // Convert PSBT to hex for Unisat
         const psbtHex = psbt.toHex();
         console.log("PSBT hex:", psbtHex);
