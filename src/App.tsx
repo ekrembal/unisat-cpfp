@@ -189,14 +189,22 @@ function App() {
         return;
       }
 
-      // Find UTXO with enough balance for fee payment
+      // Find UTXO with enough balance for fee payment (minimum sufficient amount)
       const requiredUtxoValue = requiredFeeSats - anchorOutputValue; // Subtract anchor value from required fee
-      const suitableUtxo = confirmedUtxos.find(utxo => utxo.value > requiredUtxoValue);
+      
+      // Filter UTXOs that have enough balance, then sort by value to get the smallest suitable one
+      const suitableUtxos = confirmedUtxos
+        .filter(utxo => utxo.value > requiredUtxoValue)
+        .sort((a, b) => a.value - b.value); // Sort ascending to get minimum first
 
-      if (!suitableUtxo) {
+      if (suitableUtxos.length === 0) {
         messageApi.error(`No UTXO found with enough balance for fee payment. Required: ${requiredUtxoValue} sats, largest UTXO: ${Math.max(...confirmedUtxos.map(u => u.value))} sats`);
         return;
       }
+
+      // Select the smallest UTXO that meets the requirement
+      const suitableUtxo = suitableUtxos[0];
+      console.log(`Selected minimum suitable UTXO: ${suitableUtxo.value} sats (required: ${requiredUtxoValue} sats, excess: ${suitableUtxo.value - requiredUtxoValue} sats)`);
 
       console.log(`Selected UTXO: ${suitableUtxo.txid}:${suitableUtxo.vout} with ${suitableUtxo.value} sats`);
 
