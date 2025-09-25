@@ -152,6 +152,40 @@ function App() {
       console.log("Transaction ID (getId()):", transactionId);
       console.log("Transaction weight:", transactionWeight);
       console.log("Expected weight: 496");
+
+      // Calculate parent transaction fee
+      let parentFee = 0;
+      let parentFeeRate = 0;
+      try {
+        // Fetch parent transaction details to get input values
+        const apiEndpoint = getMempoolApiEndpoint();
+        const parentTxResponse = await fetch(`${apiEndpoint}tx/${transactionId}`);
+        
+        if (parentTxResponse.ok) {
+          const parentTxData = await parentTxResponse.json();
+          
+          // Calculate total input value from the API data
+          const totalInputValue = parentTxData.vin.reduce((sum: number, input: any) => {
+            return sum + (input.prevout?.value || 0);
+          }, 0);
+          
+          // Calculate total output value from our decoded transaction
+          const totalOutputValue = transaction.outs.reduce((sum: number, output: any) => {
+            return sum + output.value;
+          }, 0);
+          
+          parentFee = totalInputValue - totalOutputValue;
+          parentFeeRate = Math.ceil((parentFee / (transactionWeight / 4)) * 100) / 100; // Round to 2 decimal places
+          
+          console.log(`Parent transaction fee: ${parentFee} sats`);
+          console.log(`Parent transaction fee rate: ${parentFeeRate} sat/vB`);
+          console.log(`Parent inputs: ${totalInputValue} sats, outputs: ${totalOutputValue} sats`);
+        } else {
+          console.warn("Could not fetch parent transaction details for fee calculation");
+        }
+      } catch (feeError) {
+        console.warn("Error calculating parent transaction fee:", feeError);
+      }
       
       // Check for anchor output with script starting with "51024e73"
       const anchorOutput = transaction.outs.find(output => 
@@ -167,11 +201,18 @@ function App() {
 
       // Calculate package fee requirements (implementing Rust logic)
       const parentWeight = transactionWeight; // Already calculated above
-      const estimatedChildWeight = 500; // Weight units for estimated child transaction
+      const estimatedChildWeight = 609; // Weight units for estimated child transaction
       const totalWeight = parentWeight + estimatedChildWeight;
-      const requiredFeeSats = Math.ceil((totalWeight * feeRate) / 4.0); // Convert vB to WU
       
-      console.log(`Parent weight: ${parentWeight}, estimated total: ${totalWeight}, required fee: ${requiredFeeSats} sats`);
+      // Convert weight units to virtual bytes: vBytes = weight / 4
+      // Then calculate fee: fee = vBytes * feeRate
+      // Combined: fee = (weight / 4) * feeRate = weight * feeRate / 4
+      // Use precise calculation to avoid floating point errors
+      const totalVirtualBytes = Math.ceil(totalWeight / 4.0);
+      const requiredFeeSats = totalVirtualBytes * feeRate;
+      
+      console.log(`Parent weight: ${parentWeight} WU, estimated child: ${estimatedChildWeight} WU, total: ${totalWeight} WU`);
+      console.log(`Total virtual bytes: ${totalVirtualBytes} vB, fee rate: ${feeRate} sat/vB, required fee: ${requiredFeeSats} sats`);
 
       // Find anchor output index and value
       const anchorOutputIndex = transaction.outs.findIndex(output => 
@@ -219,7 +260,7 @@ function App() {
 
       console.log(`Total input value: ${totalInputValue} sats, change amount: ${changeAmount} sats`);
 
-      // Create child transaction structure (conceptual - actual PSBT creation would need unisat)
+      // Create child transaction structure with accurate fee calculations
       const childTxStructure = {
         version: 3,
         locktime: 0,
@@ -246,9 +287,17 @@ function App() {
             scriptPubKey: "" // Would be the wallet's address script
           }
         ],
-        estimatedWeight: estimatedChildWeight,
+        // Accurate fee calculations
+        parentWeight: parentWeight,
+        parentFee: parentFee,
+        parentFeeRate: parentFeeRate,
+        estimatedChildWeight: estimatedChildWeight,
+        totalWeight: totalWeight,
+        totalVirtualBytes: totalVirtualBytes,
         feeRate: feeRate,
-        totalFee: requiredFeeSats
+        totalFee: requiredFeeSats,
+        // Package fee rate calculation
+        packageFeeRate: Math.ceil(requiredFeeSats / totalVirtualBytes * 100) / 100 // Round to 2 decimal places
       };
 
       console.log("Child transaction structure:", childTxStructure);
@@ -957,6 +1006,11 @@ function App() {
                     <div>
                       <strong>Weight:</strong> {txWeight} WU
                     </div>
+                    {childTxStructure && childTxStructure.parentFee > 0 && (
+                      <div>
+                        <strong>Fee:</strong> {childTxStructure.parentFee} sats ({childTxStructure.parentFeeRate} sat/vB)
+                      </div>
+                    )}
                     <div>
                       <strong>Locktime:</strong> {decodedTx.locktime}
                     </div>
@@ -1016,15 +1070,32 @@ function App() {
                       <strong>Total Fee:</strong> {childTxStructure.totalFee} sats
                     </div>
                     <div>
-                      <strong>Fee Rate:</strong> {childTxStructure.feeRate} sat/vB
+                      <strong>Target Fee Rate:</strong> {childTxStructure.feeRate} sat/vB
                     </div>
                     <div>
-                      <strong>Estimated Weight:</strong> {childTxStructure.estimatedWeight} WU
+                      <strong>Package Fee Rate:</strong> {childTxStructure.packageFeeRate} sat/vB
+                    </div>
+                    <div>
+                      <strong>Parent Weight:</strong> {childTxStructure.parentWeight} WU
+                    </div>
+                    <div>
+                      <strong>Parent Fee:</strong> {childTxStructure.parentFee} sats
+                      {childTxStructure.parentFeeRate > 0 && (
+                        <span style={{ marginLeft: 8 }}>
+                          ({childTxStructure.parentFeeRate} sat/vB)
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      <strong>Child Weight (est):</strong> {childTxStructure.estimatedChildWeight} WU
                       {childTxStructure.actualWeight && (
                         <span style={{ color: "#52c41a", marginLeft: 8 }}>
                           (Actual: {childTxStructure.actualWeight} WU)
                         </span>
                       )}
+                    </div>
+                    <div>
+                      <strong>Total Package:</strong> {childTxStructure.totalWeight} WU ({childTxStructure.totalVirtualBytes} vB)
                     </div>
                     <div style={{ marginTop: 8 }}>
                       <strong>Inputs ({childTxStructure.inputs.length}):</strong>
