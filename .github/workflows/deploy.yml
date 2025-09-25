@@ -1,0 +1,53 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Prevent overlapping deploys on fast pushes
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: write  # required to push to gh-pages with GITHUB_TOKEN
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build
+        env:
+          # If your CRA package.json has "homepage": "https://USERNAME.github.io/REPO"
+          # CRA will use it automatically. Otherwise you can override:
+          # PUBLIC_URL: https://USERNAME.github.io/REPO
+          CI: true
+        run: |
+          npm run build
+          # Optional: make client-side routing work on refreshes
+          cp build/index.html build/404.html || true
+          # If you have a custom domain, uncomment the next line or keep public/CNAME in your repo
+          # echo "app.example.com" > build/CNAME
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: build
+          # If using a custom domain and you didn't echo CNAME above, you can set:
+          # cname: app.example.com
