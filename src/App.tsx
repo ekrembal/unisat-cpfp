@@ -75,6 +75,7 @@ function App() {
   const [txid, setTxid] = useState<string>("");
   const [txWeight, setTxWeight] = useState<number>(0);
   const [childTxStructure, setChildTxStructure] = useState<any>(null);
+  const [utxoAutoReload, setUtxoAutoReload] = useState(true);
 
   const chain = CHAINS_MAP[chainType];
 
@@ -96,9 +97,11 @@ function App() {
   };
 
   // Function to fetch UTXOs for the current address
-  const fetchUtxos = async () => {
+  const fetchUtxos = async (showSuccessMessage = true) => {
     if (!address) {
-      messageApi.error("No address available");
+      if (showSuccessMessage) {
+        messageApi.error("No address available");
+      }
       return;
     }
 
@@ -113,10 +116,16 @@ function App() {
 
       const utxoData = await response.json();
       setUtxos(utxoData);
-      messageApi.success(`Loaded ${utxoData.length} UTXOs`);
+      if (showSuccessMessage) {
+        messageApi.success(`Loaded ${utxoData.length} UTXOs`);
+      }
     } catch (error) {
       console.error("Error fetching UTXOs:", error);
-      messageApi.error(`Failed to fetch UTXOs: ${error}`);
+      if (showSuccessMessage) {
+        messageApi.error(`Failed to fetch UTXOs: ${error}`);
+      } else {
+        messageApi.warning("UTXO update failed");
+      }
       setUtxos([]);
     } finally {
       setUtxoLoading(false);
@@ -574,6 +583,31 @@ function App() {
     checkUnisat().then();
   }, []);
 
+  // Auto-reload UTXOs every 5 seconds when connected and auto-reload is enabled
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
+
+    if (connected && address && utxoAutoReload) {
+      // Initial fetch
+      fetchUtxos(false);
+      
+      // Set up auto-reload interval
+      intervalId = setInterval(() => {
+        fetchUtxos(false);
+      }, 5000); // 5 seconds
+      
+      console.log("UTXO auto-reload enabled (5s interval)");
+    }
+
+    // Cleanup interval on unmount or when conditions change
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+        console.log("UTXO auto-reload disabled");
+      }
+    };
+  }, [connected, address, utxoAutoReload]);
+
   const [messageApi, contextHolder] = useMessage();
 
   if (!unisatInstalled) {
@@ -819,15 +853,29 @@ function App() {
               >
                 <div style={{ fontWeight: "bold" }}>
                   Address UTXOs ({utxos.length})
+                  {utxoAutoReload && (
+                    <span style={{ fontSize: "12px", color: "#52c41a", marginLeft: 8 }}>
+                      (Auto-reload: 5s)
+                    </span>
+                  )}
                 </div>
-                <Button
-                  onClick={fetchUtxos}
-                  loading={utxoLoading}
-                  disabled={!address}
-                  size="small"
-                >
-                  Reload
-                </Button>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Button
+                    onClick={() => setUtxoAutoReload(!utxoAutoReload)}
+                    size="small"
+                    type={utxoAutoReload ? "primary" : "default"}
+                  >
+                    Auto {utxoAutoReload ? "ON" : "OFF"}
+                  </Button>
+                  <Button
+                    onClick={() => fetchUtxos()}
+                    loading={utxoLoading}
+                    disabled={!address}
+                    size="small"
+                  >
+                    Reload
+                  </Button>
+                </div>
               </div>
 
               {utxos.length === 0 && !utxoLoading ? (
