@@ -212,7 +212,7 @@ function App() {
       // Combined: fee = (weight / 4) * feeRate = weight * feeRate / 4
       // Use precise calculation to avoid floating point errors
       const totalVirtualBytes = Math.ceil(totalWeight / 4.0);
-      const requiredFeeSats = totalVirtualBytes * feeRate;
+      const requiredFeeSats = Math.ceil(totalVirtualBytes * feeRate);
       
       console.log(`Parent weight: ${parentWeight} WU, estimated child: ${estimatedChildWeight} WU, total: ${totalWeight} WU`);
       console.log(`Total virtual bytes: ${totalVirtualBytes} vB, fee rate: ${feeRate} sat/vB, required fee: ${requiredFeeSats} sats`);
@@ -252,7 +252,7 @@ function App() {
 
       console.log(`Selected UTXO: ${suitableUtxo.txid}:${suitableUtxo.vout} with ${suitableUtxo.value} sats`);
 
-      // Calculate change amount
+      // Calculate change amount (ensure integer satoshi value)
       const totalInputValue = anchorOutputValue + suitableUtxo.value;
       const changeAmount = totalInputValue - requiredFeeSats;
 
@@ -300,7 +300,7 @@ function App() {
         feeRate: feeRate,
         totalFee: requiredFeeSats,
         // Package fee rate calculation
-        packageFeeRate: Math.ceil(requiredFeeSats / totalVirtualBytes * 100) / 100 // Round to 2 decimal places
+        packageFeeRate: Math.round(requiredFeeSats / totalVirtualBytes * 100) / 100 // Round to 2 decimal places
       };
 
       console.log("Child transaction structure:", childTxStructure);
@@ -961,10 +961,11 @@ function App() {
                   <InputNumber
                     value={feeRate}
                     onChange={(value) => setFeeRate(value || 1)}
-                    min={1}
+                    min={0.1}
                     max={1000}
-                    step={1}
-                    style={{ width: 100 }}
+                    step={0.1}
+                    precision={1}
+                    style={{ width: 150 }}
                     addonAfter="sat/vB"
                   />
                 </div>
