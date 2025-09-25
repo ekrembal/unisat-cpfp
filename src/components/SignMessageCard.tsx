@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Button, Card, Input, Radio } from "antd";
+import React, { useState } from "react";
+import { Button, Card, Input } from "antd";
 
 export function SignMessageCard() {
   const [message, setMessage] = useState("hello world~");
@@ -14,7 +14,7 @@ export function SignMessageCard() {
     <Card size="small" title="Sign Message" style={{ margin: 10 }}>
       <div style={{ textAlign: "left", marginTop: 10 }}>
         <div style={{ fontWeight: "bold" }}>Docs:</div>
-        <a href={doc_url} target="_blank">
+        <a href={doc_url} target="_blank" rel="noreferrer">
           {doc_url}
         </a>
       </div>

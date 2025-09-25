@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import "./App.css";
 import {
   Button,
@@ -6,7 +6,6 @@ import {
   CollapseProps,
   Input,
   Radio,
-  message,
   InputNumber,
 } from "antd";
 import { Collapse } from "antd";
@@ -45,14 +44,8 @@ function App() {
 
   const [unisatInstalled, setUnisatInstalled] = useState(false);
   const [connected, setConnected] = useState(false);
-  const [accounts, setAccounts] = useState<string[]>([]);
   const [publicKey, setPublicKey] = useState("");
   const [address, setAddress] = useState("");
-  const [balance, setBalance] = useState({
-    confirmed: 0,
-    unconfirmed: 0,
-    total: 0,
-  });
   const [balanceV2, setBalanceV2] = useState({
     available: 0,
     unavailable: 0,
@@ -75,12 +68,13 @@ function App() {
   const [txid, setTxid] = useState<string>("");
   const [txWeight, setTxWeight] = useState<number>(0);
   const [childTxStructure, setChildTxStructure] = useState<any>(null);
-  const [utxoAutoReload, setUtxoAutoReload] = useState(true);
+  const [utxoAutoReload, setUtxoAutoReload] = useState(false);
 
   const chain = CHAINS_MAP[chainType];
+  const [messageApi, contextHolder] = useMessage();
 
   // Function to get the mempool API endpoint based on current chain
-  const getMempoolApiEndpoint = () => {
+  const getMempoolApiEndpoint = useCallback(() => {
     let baseUrl = mempoolApiUrl.endsWith("/")
       ? mempoolApiUrl
       : mempoolApiUrl + "/";
@@ -94,10 +88,10 @@ function App() {
     } else {
       return baseUrl + "api/";
     }
-  };
+  }, [mempoolApiUrl, chainType]);
 
   // Function to fetch UTXOs for the current address
-  const fetchUtxos = async (showSuccessMessage = true) => {
+  const fetchUtxos = useCallback(async (showSuccessMessage = true) => {
     if (!address) {
       if (showSuccessMessage) {
         messageApi.error("No address available");
@@ -130,7 +124,7 @@ function App() {
     } finally {
       setUtxoLoading(false);
     }
-  };
+  }, [address, getMempoolApiEndpoint, messageApi]);
 
   // Function to create and sign CPFP child transaction
   const createAndSignChildTx = async () => {
@@ -444,28 +438,14 @@ function App() {
     }
   };
 
-  const getBasicInfo = async () => {
+  const getBasicInfo = useCallback(async () => {
     const unisat = (window as any).unisat;
-
-    try {
-      const accounts = await unisat.getAccounts();
-      setAccounts(accounts);
-    } catch (e) {
-      console.log("getAccounts error", e);
-    }
 
     try {
       const publicKey = await unisat.getPublicKey();
       setPublicKey(publicKey);
     } catch (e) {
       console.log("getPublicKey error", e);
-    }
-
-    try {
-      const balance = await unisat.getBalance();
-      setBalance(balance);
-    } catch (e) {
-      console.log("getBalance error", e);
     }
 
     try {
@@ -505,13 +485,13 @@ function App() {
         console.log("getChain error", e);
       }
     }
-  };
+  }, []);
 
   const selfRef = useRef<{ accounts: string[] }>({
     accounts: [],
   });
   const self = selfRef.current;
-  const handleAccountsChanged = (_accounts: string[]) => {
+  const handleAccountsChanged = useCallback((_accounts: string[]) => {
     console.log("accounts changed", _accounts);
     if (self.accounts[0] === _accounts[0]) {
       // prevent from triggering twice
@@ -519,24 +499,21 @@ function App() {
     }
     self.accounts = _accounts;
     if (_accounts.length > 0) {
-      setAccounts(_accounts);
       setConnected(true);
-
       setAddress(_accounts[0]);
-
       getBasicInfo();
     } else {
       setConnected(false);
     }
-  };
+  }, [self, getBasicInfo]);
 
-  const handleNetworkChanged = (network: string) => {
+  const handleNetworkChanged = useCallback((network: string) => {
     console.log("network changed", network);
     setNetwork(network);
     getBasicInfo();
-  };
+  }, [getBasicInfo]);
 
-  const handleChainChanged = (chain: {
+  const handleChainChanged = useCallback((chain: {
     enum: ChainType;
     name: string;
     network: string;
@@ -544,7 +521,7 @@ function App() {
     console.log("chain changed", chain);
     setChainType(chain.enum);
     getBasicInfo();
-  };
+  }, [getBasicInfo]);
 
   useEffect(() => {
     async function checkUnisat() {
@@ -581,7 +558,7 @@ function App() {
     }
 
     checkUnisat().then();
-  }, []);
+  }, [handleAccountsChanged, handleChainChanged, handleNetworkChanged, messageApi]);
 
   // Auto-reload UTXOs every 5 seconds when connected and auto-reload is enabled
   useEffect(() => {
@@ -606,9 +583,7 @@ function App() {
         console.log("UTXO auto-reload disabled");
       }
     };
-  }, [connected, address, utxoAutoReload]);
-
-  const [messageApi, contextHolder] = useMessage();
+  }, [connected, address, utxoAutoReload, fetchUtxos]);
 
   if (!unisatInstalled) {
     return (

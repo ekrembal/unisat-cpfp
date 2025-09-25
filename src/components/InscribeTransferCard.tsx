@@ -1,10 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Button, Card, Input, Radio } from "antd";
+import React, { useState } from "react";
+import { Button, Card, Input } from "antd";
 
 export function InscribeTransferCard() {
   const [ticker, setTicker] = useState("");
   const [amount, setAmount] = useState("");
-  const [result, setResult] = useState({
+  const [, setResult] = useState({
     success: false,
     error: "",
   });
@@ -16,7 +16,7 @@ export function InscribeTransferCard() {
     <Card size="small" title="InscribeTransfer" style={{ margin: 10 }}>
       <div style={{ textAlign: "left", marginTop: 10 }}>
         <div style={{ fontWeight: "bold" }}>Docs:</div>
-        <a href={doc_url} target="_blank">
+        <a href={doc_url} target="_blank" rel="noreferrer">
           {doc_url}
         </a>
       </div>

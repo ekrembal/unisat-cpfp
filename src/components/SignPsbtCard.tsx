@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Button, Card, Input, Radio } from "antd";
+import React, { useState } from "react";
+import { Button, Card, Input } from "antd";
 
 export function SignPsbtCard() {
   const [psbtHex, setPsbtHex] = useState("");
-  const [psbtResult, setPsbtResult] = useState("");
+  const [, setPsbtResult] = useState("");
   const [result, setResult] = useState({
     success: false,
     error: "",
@@ -15,7 +15,7 @@ export function SignPsbtCard() {
     <Card size="small" title="Sign Psbt" style={{ margin: 10 }}>
       <div style={{ textAlign: "left", marginTop: 10 }}>
         <div style={{ fontWeight: "bold" }}>Docs:</div>
-        <a href={doc_url} target="_blank">
+        <a href={doc_url} target="_blank" rel="noreferrer">
           {doc_url}
         </a>
       </div>
@@ -49,12 +49,13 @@ export function SignPsbtCard() {
             data: "",
           });
           try {
-            const psbtResult = await (window as any).unisat.signPsbt(psbtHex);
+            const signedPsbt = await (window as any).unisat.signPsbt(psbtHex);
+            setPsbtResult(signedPsbt);
 
             setResult({
               success: true,
               error: "",
-              data: psbtResult,
+              data: signedPsbt,
             });
           } catch (e) {
             setResult({
