@@ -584,15 +584,19 @@ function App() {
       console.log(`Selected UTXO: ${selectedTxid}:${selectedVout} with ${selectedUtxoData.value} sats`);
 
       // Estimate new weight (original + new input + new output)
-      // New input weight estimate: ~68 WU for P2WPKH, ~272 WU for P2TR
-      // New output weight estimate: ~34 WU for P2WPKH, ~43 WU for P2TR
-      const newInputWeight = selectedUtxoScript.startsWith("5120") ? 272 : 68; // P2TR vs P2WPKH
-      const newOutputWeight = address.startsWith("bc1p") || address.startsWith("tb1p") ? 43 : 34;
+      // Input weight = base (41 bytes * 4 = 164 WU) + witness data (WU = bytes for witness)
+      // P2TR key-path input: 164 WU base + 66 WU witness (1 + 1 + 64) = 230 WU
+      // P2WPKH input: 164 WU base + ~108 WU witness (1 + 72 + 33 + 2) = 272 WU
+      // Output weight = bytes * 4 (all output data is in base tx)
+      // P2TR output: 43 bytes * 4 = 172 WU
+      // P2WPKH output: 31 bytes * 4 = 124 WU
+      const newInputWeight = selectedUtxoScript.startsWith("5120") ? 230 : 272; // P2TR: 230 WU, P2WPKH: 272 WU
+      const newOutputWeight = (address.startsWith("bc1p") || address.startsWith("tb1p")) ? 172 : 124; // P2TR: 172 WU, P2WPKH: 124 WU
       const estimatedNewWeight = originalWeight + newInputWeight + newOutputWeight;
       const estimatedNewVBytes = Math.ceil(estimatedNewWeight / 4);
 
-      // Calculate required fee for new transaction
-      const requiredFee = Math.ceil(estimatedNewVBytes * rbfFeeRate);
+      // Calculate required fee for new transaction (add 1 to ensure we meet or exceed target rate)
+      const requiredFee = Math.ceil(estimatedNewVBytes * rbfFeeRate) + 1;
       
       // The fee must be higher than original - RBF requires fee increase
       if (requiredFee <= originalFee) {
