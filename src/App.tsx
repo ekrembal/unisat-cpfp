@@ -29,6 +29,41 @@ import { SignPsbtsCard } from "./components/SignPsbtsCard";
 // Initialize ECC library for web browsers
 bitcoin.initEccLib(ecc);
 
+// Helper function to serialize witness stack for PSBT finalScriptWitness
+function serializeWitness(witnessStack: any[]): Buffer {
+  // Write varint for the number of witness elements
+  const varintBuf = (n: number): Buffer => {
+    if (n < 0xfd) {
+      const buf = Buffer.alloc(1);
+      buf.writeUInt8(n, 0);
+      return buf;
+    } else if (n <= 0xffff) {
+      const buf = Buffer.alloc(3);
+      buf.writeUInt8(0xfd, 0);
+      buf.writeUInt16LE(n, 1);
+      return buf;
+    } else if (n <= 0xffffffff) {
+      const buf = Buffer.alloc(5);
+      buf.writeUInt8(0xfe, 0);
+      buf.writeUInt32LE(n, 1);
+      return buf;
+    } else {
+      throw new Error('Value too large for varint');
+    }
+  };
+
+  const parts: Buffer[] = [];
+  parts.push(varintBuf(witnessStack.length));
+  
+  for (const item of witnessStack) {
+    const itemBuf = Buffer.isBuffer(item) ? item : Buffer.from(item);
+    parts.push(varintBuf(itemBuf.length));
+    parts.push(itemBuf);
+  }
+  
+  return Buffer.concat(parts as Uint8Array[]);
+}
+
 function App() {
   // Test to verify bitcoinjs-lib and ECC work
   useEffect(() => {
@@ -69,6 +104,16 @@ function App() {
   const [txWeight, setTxWeight] = useState<number>(0);
   const [childTxStructure, setChildTxStructure] = useState<any>(null);
   const [utxoAutoReload, setUtxoAutoReload] = useState(false);
+
+  // RBF state
+  const [rbfRawTx, setRbfRawTx] = useState("");
+  const [rbfFeeRate, setRbfFeeRate] = useState(10);
+  const [rbfLoading, setRbfLoading] = useState(false);
+  const [rbfDecodedTx, setRbfDecodedTx] = useState<Transaction | null>(null);
+  const [rbfTxid, setRbfTxid] = useState<string>("");
+  const [rbfTxWeight, setRbfTxWeight] = useState<number>(0);
+  const [rbfTxStructure, setRbfTxStructure] = useState<any>(null);
+  const [rbfSelectedUtxo, setRbfSelectedUtxo] = useState<string>("");
 
   const chain = CHAINS_MAP[chainType];
   const [messageApi, contextHolder] = useMessage();
@@ -435,6 +480,300 @@ function App() {
       setChildTxStructure(null);
     } finally {
       setCpfpLoading(false);
+    }
+  };
+
+  // Function to create and sign RBF transaction
+  const createRbfTransaction = async () => {
+    if (!rbfRawTx.trim()) {
+      messageApi.error("Please enter a raw transaction for RBF");
+      return;
+    }
+
+    if (!address) {
+      messageApi.error("No address available");
+      return;
+    }
+
+    if (!rbfSelectedUtxo) {
+      messageApi.error("Please select a UTXO to add as input");
+      return;
+    }
+
+    setRbfLoading(true);
+    try {
+      // Parse the original transaction
+      console.log("Parsing original transaction for RBF...");
+      const originalTx = Transaction.fromHex(rbfRawTx.trim());
+      const originalTxid = originalTx.getId();
+      const originalWeight = originalTx.weight();
+      
+      setRbfDecodedTx(originalTx);
+      setRbfTxid(originalTxid);
+      setRbfTxWeight(originalWeight);
+
+      console.log("Original transaction ID:", originalTxid);
+      console.log("Original transaction weight:", originalWeight);
+      console.log("Original inputs:", originalTx.ins.length);
+      console.log("Original outputs:", originalTx.outs.length);
+
+      // Calculate original transaction fee by fetching input values
+      const apiEndpoint = getMempoolApiEndpoint();
+      let totalInputValue = 0;
+      const inputDetails: any[] = [];
+
+      for (let i = 0; i < originalTx.ins.length; i++) {
+        const input = originalTx.ins[i];
+        const prevTxid = input.hash.reverse().toString("hex");
+        input.hash.reverse(); // Reverse back to original
+        const prevVout = input.index;
+
+        try {
+          const prevTxResponse = await fetch(`${apiEndpoint}tx/${prevTxid}`);
+          if (prevTxResponse.ok) {
+            const prevTxData = await prevTxResponse.json();
+            const prevOutput = prevTxData.vout[prevVout];
+            totalInputValue += prevOutput.value;
+            inputDetails.push({
+              txid: prevTxid,
+              vout: prevVout,
+              value: prevOutput.value,
+              scriptPubKey: prevOutput.scriptpubkey
+            });
+          } else {
+            throw new Error(`Failed to fetch previous tx: ${prevTxid}`);
+          }
+        } catch (fetchError) {
+          console.error(`Error fetching input ${i}:`, fetchError);
+          messageApi.error(`Failed to fetch input ${i} details`);
+          return;
+        }
+      }
+
+      const totalOutputValue = originalTx.outs.reduce((sum, out) => sum + out.value, 0);
+      const originalFee = totalInputValue - totalOutputValue;
+      const originalFeeRate = Math.ceil((originalFee / (originalWeight / 4)) * 100) / 100;
+
+      console.log(`Original fee: ${originalFee} sats (${originalFeeRate} sat/vB)`);
+
+      // Parse selected UTXO
+      const [selectedTxid, selectedVoutStr] = rbfSelectedUtxo.split(":");
+      const selectedVout = parseInt(selectedVoutStr);
+      const selectedUtxoData = utxos.find(u => u.txid === selectedTxid && u.vout === selectedVout);
+
+      if (!selectedUtxoData) {
+        messageApi.error("Selected UTXO not found");
+        return;
+      }
+
+      // Fetch scriptPubKey for the selected UTXO
+      let selectedUtxoScript: string;
+      try {
+        const utxoTxResponse = await fetch(`${apiEndpoint}tx/${selectedTxid}`);
+        if (!utxoTxResponse.ok) {
+          throw new Error(`Failed to fetch UTXO transaction: ${utxoTxResponse.status}`);
+        }
+        const utxoTx = await utxoTxResponse.json();
+        selectedUtxoScript = utxoTx.vout[selectedVout].scriptpubkey;
+      } catch (apiError) {
+        console.error("Error fetching UTXO script:", apiError);
+        messageApi.error("Failed to fetch UTXO script");
+        return;
+      }
+
+      console.log(`Selected UTXO: ${selectedTxid}:${selectedVout} with ${selectedUtxoData.value} sats`);
+
+      // Estimate new weight (original + new input + new output)
+      // New input weight estimate: ~68 WU for P2WPKH, ~272 WU for P2TR
+      // New output weight estimate: ~34 WU for P2WPKH, ~43 WU for P2TR
+      const newInputWeight = selectedUtxoScript.startsWith("5120") ? 272 : 68; // P2TR vs P2WPKH
+      const newOutputWeight = address.startsWith("bc1p") || address.startsWith("tb1p") ? 43 : 34;
+      const estimatedNewWeight = originalWeight + newInputWeight + newOutputWeight;
+      const estimatedNewVBytes = Math.ceil(estimatedNewWeight / 4);
+
+      // Calculate required fee for new transaction
+      const requiredFee = Math.ceil(estimatedNewVBytes * rbfFeeRate);
+      
+      // The fee must be higher than original - RBF requires fee increase
+      if (requiredFee <= originalFee) {
+        messageApi.error(`New fee (${requiredFee} sats) must be higher than original fee (${originalFee} sats). Increase fee rate.`);
+        return;
+      }
+
+      // Calculate additional fee needed
+      const additionalFeeNeeded = requiredFee - originalFee;
+      
+      // Calculate change amount: selected UTXO value - additional fee needed
+      const changeAmount = selectedUtxoData.value - additionalFeeNeeded;
+
+      if (changeAmount < 546) { // Dust limit
+        messageApi.error(`Insufficient funds. Change would be ${changeAmount} sats (below dust limit). Need UTXO with at least ${additionalFeeNeeded + 546} sats.`);
+        return;
+      }
+
+      console.log(`Required fee: ${requiredFee} sats, additional needed: ${additionalFeeNeeded} sats`);
+      console.log(`Change amount: ${changeAmount} sats`);
+
+      // Create the RBF transaction structure
+      const rbfStructure = {
+        originalTxid,
+        originalWeight,
+        originalFee,
+        originalFeeRate,
+        originalInputs: inputDetails,
+        originalOutputs: originalTx.outs.map((out, i) => ({
+          index: i,
+          value: out.value,
+          script: out.script.toString("hex")
+        })),
+        newInput: {
+          txid: selectedTxid,
+          vout: selectedVout,
+          value: selectedUtxoData.value,
+          scriptPubKey: selectedUtxoScript
+        },
+        newOutput: {
+          value: changeAmount,
+          address: address
+        },
+        estimatedNewWeight,
+        estimatedNewVBytes,
+        requiredFee,
+        newFeeRate: rbfFeeRate,
+        additionalFeeNeeded
+      };
+
+      setRbfTxStructure(rbfStructure);
+
+      // Determine network
+      const btcNetwork = chainType === ChainType.BITCOIN_MAINNET ? 
+        bitcoin.networks.bitcoin : bitcoin.networks.testnet;
+
+      // Create PSBT for the new transaction
+      const psbt = new bitcoin.Psbt({ network: btcNetwork });
+      psbt.setVersion(originalTx.version);
+
+      // Add all original inputs (with existing witness data preserved)
+      for (let i = 0; i < originalTx.ins.length; i++) {
+        const input = originalTx.ins[i];
+        const prevTxid = input.hash.reverse().toString("hex");
+        input.hash.reverse();
+        
+        psbt.addInput({
+          hash: prevTxid,
+          index: input.index,
+          sequence: input.sequence,
+          witnessUtxo: {
+            script: Buffer.from(inputDetails[i].scriptPubKey, 'hex'),
+            value: inputDetails[i].value
+          }
+        });
+
+        // Mark existing inputs as finalized with their existing witness
+        if (input.witness && input.witness.length > 0) {
+          // Serialize witness data properly: varint count + for each element: varint length + data
+          const witnessStack = input.witness;
+          const serializedWitness = serializeWitness(witnessStack);
+          psbt.data.inputs[i].finalScriptWitness = serializedWitness;
+        }
+      }
+
+      // Add the new UTXO as the last input
+      psbt.addInput({
+        hash: selectedTxid,
+        index: selectedVout,
+        witnessUtxo: {
+          script: Buffer.from(selectedUtxoScript, 'hex'),
+          value: selectedUtxoData.value
+        }
+      });
+
+      // Add all original outputs
+      for (const output of originalTx.outs) {
+        psbt.addOutput({
+          script: output.script,
+          value: output.value
+        });
+      }
+
+      // Add change output as the last output
+      psbt.addOutput({
+        address: address,
+        value: changeAmount
+      });
+
+      console.log("RBF PSBT created with:");
+      console.log(`  Inputs: ${originalTx.ins.length + 1} (${originalTx.ins.length} original + 1 new)`);
+      console.log(`  Outputs: ${originalTx.outs.length + 1} (${originalTx.outs.length} original + 1 change)`);
+
+      // Request signature only for the new input
+      const signInputIndex = originalTx.ins.length; // Last input (0-indexed)
+      
+      const psbtHex = psbt.toHex();
+      console.log("RBF PSBT hex:", psbtHex);
+
+      messageApi.info("Requesting signature for the new input from Unisat wallet...");
+
+      try {
+        // Sign only the new input
+        const signedPsbtHex = await (window as any).unisat.signPsbt(psbtHex, {
+          autoFinalized: true,
+          toSignInputs: [{
+            index: signInputIndex,
+            address: address
+          }]
+        });
+
+        console.log("Signed RBF PSBT:", signedPsbtHex);
+
+        const signedPsbt = bitcoin.Psbt.fromHex(signedPsbtHex);
+        
+        // Finalize all inputs that weren't already finalized
+        for (let i = 0; i < signedPsbt.data.inputs.length; i++) {
+          if (!signedPsbt.data.inputs[i].finalScriptWitness && !signedPsbt.data.inputs[i].finalScriptSig) {
+            try {
+              signedPsbt.finalizeInput(i);
+            } catch (finalizeError) {
+              console.log(`Input ${i} already finalized or cannot be finalized:`, finalizeError);
+            }
+          }
+        }
+
+        const finalTx = signedPsbt.extractTransaction();
+        const finalTxHex = finalTx.toHex();
+        const finalTxId = finalTx.getId();
+        const actualWeight = finalTx.weight();
+
+        console.log("Final RBF transaction hex:", finalTxHex);
+        console.log("Final RBF transaction ID:", finalTxId);
+        console.log("Actual weight:", actualWeight);
+
+        // Update structure with signed transaction info
+        setRbfTxStructure({
+          ...rbfStructure,
+          signedTxHex: finalTxHex,
+          signedTxId: finalTxId,
+          actualWeight: actualWeight,
+          actualFee: requiredFee,
+          actualFeeRate: Math.ceil((requiredFee / (actualWeight / 4)) * 100) / 100
+        });
+
+        messageApi.success(`RBF transaction signed! New TXID: ${finalTxId}`);
+
+      } catch (signError) {
+        console.error("Error signing RBF transaction:", signError);
+        messageApi.error(`Failed to sign RBF transaction: ${signError}`);
+      }
+
+    } catch (error) {
+      console.error("Error creating RBF transaction:", error);
+      messageApi.error(`Failed to create RBF transaction: ${error}`);
+      setRbfDecodedTx(null);
+      setRbfTxid("");
+      setRbfTxWeight(0);
+      setRbfTxStructure(null);
+    } finally {
+      setRbfLoading(false);
     }
   };
 
@@ -1184,6 +1523,250 @@ function App() {
                               border: "1px solid #d9d9d9"
                             }}>
                               {childTxStructure.signedTxHex}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </Card>
+
+            <Card
+              size="small"
+              title="Tx RBF Bumper"
+              style={{ width: "100%", marginBottom: 20 }}
+            >
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: "bold", marginBottom: 8 }}>
+                  Raw Transaction to Replace:
+                </div>
+                <Input.TextArea
+                  value={rbfRawTx}
+                  onChange={(e) => setRbfRawTx(e.target.value)}
+                  placeholder="Enter raw transaction hex here to bump with RBF..."
+                  rows={6}
+                  style={{ fontFamily: "monospace", fontSize: "12px" }}
+                />
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 16,
+                  marginBottom: 16,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontWeight: "bold" }}>New Fee Rate:</span>
+                  <InputNumber
+                    value={rbfFeeRate}
+                    onChange={(value) => setRbfFeeRate(value || 1)}
+                    min={1}
+                    max={1000}
+                    step={1}
+                    style={{ width: 150 }}
+                    addonAfter="sat/vB"
+                  />
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                  <span style={{ fontWeight: "bold" }}>Select UTXO:</span>
+                  <select
+                    value={rbfSelectedUtxo}
+                    onChange={(e) => setRbfSelectedUtxo(e.target.value)}
+                    style={{ 
+                      flex: 1, 
+                      padding: "4px 8px", 
+                      borderRadius: 4, 
+                      border: "1px solid #d9d9d9",
+                      fontFamily: "monospace",
+                      fontSize: "12px"
+                    }}
+                  >
+                    <option value="">-- Select a UTXO to add --</option>
+                    {utxos.filter(u => u.status.confirmed).map((utxo, idx) => (
+                      <option key={idx} value={`${utxo.txid}:${utxo.vout}`}>
+                        {utxo.txid.slice(0, 8)}...:{utxo.vout} ({satoshisToAmount(utxo.value)} {chain && chain.unit})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button
+                  type="primary"
+                  onClick={createRbfTransaction}
+                  loading={rbfLoading}
+                  disabled={!rbfRawTx.trim() || !address || !rbfSelectedUtxo}
+                  style={{ flex: 1 }}
+                >
+                  Create RBF Transaction
+                </Button>
+                <Button
+                  onClick={() => {
+                    setRbfDecodedTx(null);
+                    setRbfTxid("");
+                    setRbfTxWeight(0);
+                    setRbfTxStructure(null);
+                    setRbfSelectedUtxo("");
+                    console.log("Cleared RBF transaction state");
+                  }}
+                  disabled={!rbfDecodedTx && !rbfTxStructure}
+                  type="default"
+                >
+                  Clear
+                </Button>
+              </div>
+
+              <div style={{ marginTop: 12, fontSize: "12px", color: "#666" }}>
+                <strong>RBF (Replace-By-Fee):</strong> Creates a replacement transaction 
+                by adding a new UTXO as input and a change output. The existing signatures 
+                remain unchanged. The new input covers the additional fee needed.
+              </div>
+
+              {rbfDecodedTx && (
+                <div
+                  style={{
+                    marginTop: 16,
+                    padding: 12,
+                    backgroundColor: "#f5f5f5",
+                    borderRadius: 4,
+                  }}
+                >
+                  <div style={{ fontWeight: "bold", marginBottom: 8 }}>
+                    Original Transaction:
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: "12px",
+                      lineHeight: "1.5",
+                    }}
+                  >
+                    <div>
+                      <strong>Transaction ID:</strong> {rbfTxid}
+                    </div>
+                    <div>
+                      <strong>Version:</strong> {rbfDecodedTx.version}
+                    </div>
+                    <div>
+                      <strong>Weight:</strong> {rbfTxWeight} WU
+                    </div>
+                    {rbfTxStructure && (
+                      <div>
+                        <strong>Fee:</strong> {rbfTxStructure.originalFee} sats ({rbfTxStructure.originalFeeRate} sat/vB)
+                      </div>
+                    )}
+                    <div>
+                      <strong>Inputs:</strong> {rbfDecodedTx.ins.length}
+                    </div>
+                    <div>
+                      <strong>Outputs:</strong> {rbfDecodedTx.outs.length}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {rbfTxStructure && (
+                <div
+                  style={{
+                    marginTop: 16,
+                    padding: 12,
+                    backgroundColor: "#fff7e6",
+                    borderRadius: 4,
+                    border: "1px solid #ffd591",
+                  }}
+                >
+                  <div style={{ fontWeight: "bold", marginBottom: 8 }}>
+                    RBF Transaction Details:
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: "12px",
+                      lineHeight: "1.5",
+                    }}
+                  >
+                    <div style={{ marginBottom: 8 }}>
+                      <strong>Fee Comparison:</strong>
+                      <div style={{ marginLeft: 16 }}>
+                        <div>Original: {rbfTxStructure.originalFee} sats ({rbfTxStructure.originalFeeRate} sat/vB)</div>
+                        <div style={{ color: "#fa8c16" }}>
+                          New: {rbfTxStructure.requiredFee} sats ({rbfTxStructure.newFeeRate} sat/vB)
+                        </div>
+                        <div style={{ color: "#52c41a" }}>
+                          Increase: +{rbfTxStructure.additionalFeeNeeded} sats
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ marginBottom: 8 }}>
+                      <strong>Weight:</strong>
+                      <div style={{ marginLeft: 16 }}>
+                        <div>Original: {rbfTxStructure.originalWeight} WU</div>
+                        <div>Estimated New: {rbfTxStructure.estimatedNewWeight} WU ({rbfTxStructure.estimatedNewVBytes} vB)</div>
+                        {rbfTxStructure.actualWeight && (
+                          <div style={{ color: "#52c41a" }}>
+                            Actual: {rbfTxStructure.actualWeight} WU
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ marginBottom: 8 }}>
+                      <strong>New Input (added as last):</strong>
+                      <div style={{ marginLeft: 16, color: "#fa8c16" }}>
+                        {rbfTxStructure.newInput.txid}:{rbfTxStructure.newInput.vout}
+                        <div>Value: {satoshisToAmount(rbfTxStructure.newInput.value)} {chain && chain.unit}</div>
+                      </div>
+                    </div>
+
+                    <div style={{ marginBottom: 8 }}>
+                      <strong>New Output (added as last):</strong>
+                      <div style={{ marginLeft: 16, color: "#722ed1" }}>
+                        Change: {satoshisToAmount(rbfTxStructure.newOutput.value)} {chain && chain.unit}
+                        <div style={{ fontSize: "10px", wordBreak: "break-all" }}>
+                          To: {rbfTxStructure.newOutput.address}
+                        </div>
+                      </div>
+                    </div>
+
+                    {rbfTxStructure.signedTxId && (
+                      <div style={{ marginTop: 12, padding: 8, backgroundColor: "#f6ffed", borderRadius: 4, border: "1px solid #b7eb8f" }}>
+                        <div style={{ fontWeight: "bold", color: "#52c41a" }}>
+                          ✅ RBF Transaction Signed Successfully!
+                        </div>
+                        <div style={{ marginTop: 4 }}>
+                          <strong>New TXID:</strong> 
+                          <div style={{ wordBreak: "break-all", fontFamily: "monospace", fontSize: "11px" }}>
+                            {rbfTxStructure.signedTxId}
+                          </div>
+                        </div>
+                        {rbfTxStructure.actualFeeRate && (
+                          <div style={{ marginTop: 4 }}>
+                            <strong>Actual Fee Rate:</strong> {rbfTxStructure.actualFeeRate} sat/vB
+                          </div>
+                        )}
+                        {rbfTxStructure.signedTxHex && (
+                          <div style={{ marginTop: 4 }}>
+                            <strong>Raw Transaction:</strong>
+                            <div style={{ 
+                              wordBreak: "break-all", 
+                              fontFamily: "monospace", 
+                              fontSize: "10px", 
+                              maxHeight: "60px", 
+                              overflowY: "auto",
+                              backgroundColor: "#ffffff",
+                              padding: 4,
+                              borderRadius: 2,
+                              border: "1px solid #d9d9d9"
+                            }}>
+                              {rbfTxStructure.signedTxHex}
                             </div>
                           </div>
                         )}
