@@ -1,15 +1,15 @@
 {
   "files": {
     "main.css": "/unisat-cpfp/static/css/main.ecc00468.css",
-    "main.js": "/unisat-cpfp/static/js/main.728c580b.js",
+    "main.js": "/unisat-cpfp/static/js/main.0ac2b130.js",
     "static/js/453.3573c0b1.chunk.js": "/unisat-cpfp/static/js/453.3573c0b1.chunk.js",
     "index.html": "/unisat-cpfp/index.html",
     "main.ecc00468.css.map": "/unisat-cpfp/static/css/main.ecc00468.css.map",
-    "main.728c580b.js.map": "/unisat-cpfp/static/js/main.728c580b.js.map",
+    "main.0ac2b130.js.map": "/unisat-cpfp/static/js/main.0ac2b130.js.map",
     "453.3573c0b1.chunk.js.map": "/unisat-cpfp/static/js/453.3573c0b1.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.ecc00468.css",
-    "static/js/main.728c580b.js"
+    "static/js/main.0ac2b130.js"
   ]
 }
