@@ -504,7 +504,64 @@ function App() {
     try {
       // Parse the original transaction
       console.log("Parsing original transaction for RBF...");
-      const originalTx = Transaction.fromHex(rbfRawTx.trim());
+      
+      let originalTx: Transaction;
+      try {
+        originalTx = Transaction.fromHex(rbfRawTx.trim());
+      } catch (parseError: any) {
+        // If parsing fails due to "superfluous witness data", try parsing as legacy tx
+        // This happens when tx has 0 inputs and the 00 byte is misinterpreted as SegWit marker
+        // In legacy format: version(4) | inputCount(1) | inputs... | outputCount(1) | outputs... | locktime(4)
+        // When inputCount=0 and outputCount=1, bytes are "00 01" which looks like SegWit marker+flag
+        if (parseError.message && parseError.message.includes("superfluous witness data")) {
+          console.log("Attempting to parse as legacy transaction format (0 inputs case)...");
+          const txBuf = Buffer.from(rbfRawTx.trim(), 'hex');
+          originalTx = new Transaction();
+          
+          let offset = 0;
+          // Read version (4 bytes, little endian)
+          originalTx.version = txBuf.readInt32LE(offset);
+          offset += 4;
+          
+          // Read input count (varint) - DO NOT skip, the 00 IS the input count
+          const inputCount = txBuf.readUInt8(offset);
+          offset += 1;
+          console.log(`Parsed input count: ${inputCount}`);
+          
+          // Skip reading inputs since inputCount should be 0
+          // (If there were inputs, we'd need to parse them here)
+          
+          // Read output count (varint)
+          const outputCount = txBuf.readUInt8(offset);
+          offset += 1;
+          console.log(`Parsed output count: ${outputCount}`);
+          
+          // Read outputs
+          for (let i = 0; i < outputCount; i++) {
+            const value = Number(txBuf.readBigUInt64LE(offset));
+            offset += 8;
+            
+            const scriptLen = txBuf.readUInt8(offset);
+            offset += 1;
+            
+            const script = txBuf.slice(offset, offset + scriptLen);
+            offset += scriptLen;
+            
+            originalTx.addOutput(script, value);
+            console.log(`Parsed output ${i}: value=${value}, scriptLen=${scriptLen}, script=${script.toString('hex')}`);
+          }
+          
+          // Read locktime (4 bytes) if present
+          if (offset + 4 <= txBuf.length) {
+            originalTx.locktime = txBuf.readUInt32LE(offset);
+          }
+          
+          console.log("Successfully parsed transaction manually, outputs:", originalTx.outs.length);
+        } else {
+          throw parseError;
+        }
+      }
+      
       const originalTxid = originalTx.getId();
       const originalWeight = originalTx.weight();
       
