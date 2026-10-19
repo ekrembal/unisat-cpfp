@@ -438,16 +438,35 @@ function App() {
         const unisat = (window as any).unisat;
         messageApi.info("Requesting signature from Unisat wallet...");
         
-        const signedPsbtHex = await unisat.signPsbt(psbtHex);
+        // Input 0 is the P2A anchor (anyone-can-spend, no signature); only the
+        // fee payer input belongs to the wallet, so ask Unisat to sign and
+        // finalize exactly that one.
+        const feePayerInputIndex = 1;
+        const signedPsbtHex = await unisat.signPsbt(psbtHex, {
+          autoFinalized: true,
+          toSignInputs: [{
+            index: feePayerInputIndex,
+            address: address
+          }]
+        });
         console.log("Signed PSBT:", signedPsbtHex);
 
-        // Extract and broadcast the signed transaction
         const signedPsbt = bitcoin.Psbt.fromHex(signedPsbtHex);
 
-        console.log("Signed PSBT:", signedPsbt);
-        // signedPsbt.data.inputs[0].finalScriptWitness = Buffer.alloc(0);
+        // P2A spends with an empty scriptSig and an empty witness stack.
         signedPsbt.data.inputs[0].finalScriptSig = Buffer.alloc(0);
-        console.log("Signed PSBT:", signedPsbt);
+        signedPsbt.data.inputs[0].finalScriptWitness = serializeWitness([]);
+
+        const feePayerInput = signedPsbt.data.inputs[feePayerInputIndex];
+        if (!feePayerInput.finalScriptWitness && !feePayerInput.finalScriptSig) {
+          const hasSignature = !!feePayerInput.tapKeySig ||
+            (feePayerInput.partialSig && feePayerInput.partialSig.length > 0);
+          if (!hasSignature) {
+            throw new Error(`Unisat did not sign the fee payer input (${suitableUtxo.txid}:${suitableUtxo.vout}). Make sure the connected account owns this UTXO.`);
+          }
+          signedPsbt.finalizeInput(feePayerInputIndex);
+        }
+
         const finalTx = signedPsbt.extractTransaction();
         const finalTxHex = finalTx.toHex();
         
